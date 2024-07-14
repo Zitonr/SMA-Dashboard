@@ -3,51 +3,48 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 
-# Load all CSV files into a global dictionary
-@st.cache_data
-def load_data(directory):
-    data = {}
-    for file in os.listdir(directory):
-        if file.endswith('.csv'):
-            file_path = os.path.join(directory, file)
-            df = pd.read_csv(file_path, parse_dates=['DATE'])
-            data[file] = df
-    return data
+def run_strategy(start_date, end_date, selected_stock):
+    # Define the path to the CSV file
+    file_path = 'ndx100/' + selected_stock
 
-# Run the trading strategy
-@st.cache_data
-def run_strategy(df, start_date, end_date):
-    # Filter dataframe based on user input date range
-    df = df[(df['DATE'] >= start_date) & (df['DATE'] <= end_date)].copy()
+    # Initialize an empty DataFrame to store filtered data
+    filtered_data = pd.DataFrame()
+
+    # Read and process data in chunks
+    chunksize = 10000  # Adjust this size based on memory constraints
+    for chunk in pd.read_csv(file_path, chunksize=chunksize, parse_dates=['DATE']):
+        # Filter the chunk based on the date range
+        chunk_filtered = chunk[(chunk['DATE'] >= start_date) & (chunk['DATE'] <= end_date)]
+        filtered_data = pd.concat([filtered_data, chunk_filtered], ignore_index=True)
 
     # Calculate 50-day SMA
-    df['Short_SMA'] = df['CLOSE'].rolling(window=50).mean()
+    filtered_data['Short_SMA'] = filtered_data['CLOSE'].rolling(window=50).mean()
 
     # Calculate 200-day SMA
-    df['Long_SMA'] = df['CLOSE'].rolling(window=200).mean()
+    filtered_data['Long_SMA'] = filtered_data['CLOSE'].rolling(window=200).mean()
 
     # Find intersections
-    df['Signal'] = 0  # Initialize a column to mark intersections
-    for i in range(1, len(df)):
-        if df.at[i, 'Short_SMA'] > df.at[i, 'Long_SMA'] and df.at[i - 1, 'Short_SMA'] <= df.at[i - 1, 'Long_SMA']:
-            df.at[i, 'Signal'] = 1  # Upward crossover
-        elif df.at[i, 'Short_SMA'] < df.at[i, 'Long_SMA'] and df.at[i - 1, 'Short_SMA'] >= df.at[i - 1, 'Long_SMA']:
-            df.at[i, 'Signal'] = -1  # Downward crossover
+    filtered_data['Signal'] = 0  # Initialize a column to mark intersections
+    for i in range(1, len(filtered_data)):
+        try:
+            if filtered_data.at[i, 'Short_SMA'] > filtered_data.at[i, 'Long_SMA'] and filtered_data.at[i - 1, 'Short_SMA'] <= filtered_data.at[i - 1, 'Long_SMA']:
+                filtered_data.at[i, 'Signal'] = 1  # Upward crossover
+            elif filtered_data.at[i, 'Short_SMA'] < filtered_data.at[i, 'Long_SMA'] and filtered_data.at[i - 1, 'Short_SMA'] >= filtered_data.at[i - 1, 'Long_SMA']:
+                filtered_data.at[i, 'Signal'] = -1  # Downward crossover
+        except KeyError:
+            continue
 
-    return df
-
-# Plot the data
-def plot_data(df, selected_stock):
+    # Plot the data
     fig, ax = plt.subplots(figsize=(15, 6))
-    ax.plot(df['DATE'], df['Short_SMA'], label='50-day SMA', linestyle='--', color='blue')
-    ax.plot(df['DATE'], df['Long_SMA'], label='200-day SMA', linestyle='--', color='green')
-    ax.plot(df['DATE'], df['CLOSE'], label='Closing price', linestyle='-', color='black', linewidth=1)
-    ax.fill_between(df['DATE'], df['Short_SMA'], df['Long_SMA'], where=df['Short_SMA'] >= df['Long_SMA'],
+    ax.plot(filtered_data['DATE'], filtered_data['Short_SMA'], label='50-day SMA', linestyle='--', color='blue')
+    ax.plot(filtered_data['DATE'], filtered_data['Long_SMA'], label='200-day SMA', linestyle='--', color='green')
+    ax.plot(filtered_data['DATE'], filtered_data['CLOSE'], label='Closing price', linestyle='-', color='black', linewidth=1)
+    ax.fill_between(filtered_data['DATE'], filtered_data['Short_SMA'], filtered_data['Long_SMA'], where=filtered_data['Short_SMA'] >= filtered_data['Long_SMA'],
                     facecolor='green', interpolate=True, alpha=0.3)
-    ax.fill_between(df['DATE'], df['Short_SMA'], df['Long_SMA'], where=df['Short_SMA'] < df['Long_SMA'],
+    ax.fill_between(filtered_data['DATE'], filtered_data['Short_SMA'], filtered_data['Long_SMA'], where=filtered_data['Short_SMA'] < filtered_data['Long_SMA'],
                     facecolor='red', interpolate=True, alpha=0.3)
-    upward_crossings = df[df['Signal'] == 1]
-    downward_crossings = df[df['Signal'] == -1]
+    upward_crossings = filtered_data[filtered_data['Signal'] == 1]
+    downward_crossings = filtered_data[filtered_data['Signal'] == -1]
     ax.scatter(upward_crossings['DATE'], upward_crossings['Short_SMA'], marker='^', color='green',
                label='Upward crossover')
     ax.scatter(downward_crossings['DATE'], downward_crossings['Short_SMA'], marker='v', color='red',
@@ -56,6 +53,7 @@ def plot_data(df, selected_stock):
     ax.set_ylabel('Price')
     ax.set_title(f"{os.path.splitext(selected_stock)[0]} Stock prices")
     ax.legend()
+
     return fig
 
 # Streamlit app
@@ -66,12 +64,9 @@ def main():
     start_date = st.date_input('Enter the start date:')
     end_date = st.date_input('Enter the end date:')
 
-    # Load data
-    directory = 'ndx100/ndx100'
-    data = load_data(directory)
-
     # List available stocks
-    stocks = list(data.keys())
+    directory = 'ndx100/ndx100'
+    stocks = [os.fsdecode(file) for file in os.listdir(directory) if file.endswith('.csv')]
     selected_stock = st.selectbox('Select a stock:', stocks)
 
     if st.button('Run Strategy'):
@@ -81,15 +76,9 @@ def main():
         start_date_str = start_date.strftime('%Y-%m-%d')
         end_date_str = end_date.strftime('%Y-%m-%d')
 
-        # Get the data for the selected stock
-        df = data[selected_stock]
-
-        # Run the strategy
-        filtered_df = run_strategy(df, start_date_str, end_date_str)
-
-        # Plot the data
-        fig = plot_data(filtered_df, selected_stock)
+        fig = run_strategy(start_date_str, end_date_str, selected_stock)
         st.pyplot(fig)
 
 if __name__ == "__main__":
     main()
+
